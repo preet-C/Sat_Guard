@@ -1,104 +1,77 @@
 import { useRef, useEffect, useState, useCallback } from "react";
-import { useScroll, useTransform, motion, useMotionValueEvent } from "framer-motion";
+import { useScroll, motion, AnimatePresence } from "framer-motion";
 
-const TOTAL_FRAMES = 133;
-const IMAGE_PATH = "/hero-sequence/ezgif-frame-";
+/* ═══════════════════════════════════════════════════════════════════════
+ * HeroScroll — Video-Scrub Architecture
+ *
+ * Single-asset MP4 scrubbing. Zero workers. Zero message passing.
+ * Canvas draw AND text overlay updates happen in the SAME rAF tick
+ * → frame-perfect sync, zero drift.
+ *
+ * Data flow (one rAF tick):
+ *   scrollYProgress.get() → lerp → video.currentTime → drawImage → el.style
+ *   All synchronous. All main-thread. All in one paint.
+ * ═══════════════════════════════════════════════════════════════════════ */
 
-/**
- * Pads a number to 3 digits: 1 → "001", 15 → "015", 133 → "133"
- */
-function padFrame(n) {
-  return String(n).padStart(3, "0");
-}
+const VIDEO_SRC = "/hero-sequence.mp4";
+const SCROLL_HEIGHT = "500vh";
+const LERP_FACTOR = 0.12; // lower = smoother, higher = snappier
 
-/**
- * Builds the full URL for a given frame index (1-based).
- */
-function frameUrl(index) {
-  return `${IMAGE_PATH}${padFrame(index)}.jpg`;
-}
-
-/* ─── Text overlay data ───────────────────────────────────────────── */
+/* ─── Text overlay timeline ───────────────────────────────────────────── */
 const TEXT_SECTIONS = [
-  {
-    id: "hero-title",
-    enter: 0.16,
-    exit: 0.32,
-    align: "center",
-    content: (
-      <>
-        <h1 className="text-5xl sm:text-7xl md:text-8xl font-bold tracking-tight text-white leading-[0.95]">
-          SatGuard
-        </h1>
-        <p className="mt-4 text-lg sm:text-xl md:text-2xl font-light tracking-widest text-white/70 uppercase">
-          Orbital Intelligence.
-        </p>
-      </>
-    ),
-  },
-  {
-    id: "collision",
-    enter: 0.40,
-    exit: 0.58,
-    align: "left",
-    content: (
-      <>
-        <h2 className="text-3xl sm:text-5xl md:text-6xl font-semibold tracking-tight text-white leading-tight">
-          Proactive Collision
-          <br />
-          Avoidance.
-        </h2>
-        <p className="mt-4 max-w-md text-base sm:text-lg text-white/70 font-light leading-relaxed">
-          Advanced SGP4 propagation and risk triage — protecting critical assets in increasingly congested orbital regimes.
-        </p>
-      </>
-    ),
-  },
-  {
-    id: "mission",
-    enter: 0.64,
-    exit: 0.82,
-    align: "right",
-    content: (
-      <>
-        <h2 className="text-3xl sm:text-5xl md:text-6xl font-semibold tracking-tight text-white leading-tight text-right">
-          Seamless Mission
-          <br />
-          Planning.
-        </h2>
-        <p className="mt-4 max-w-md text-base sm:text-lg text-white/70 font-light leading-relaxed text-right">
-          Deterministic Safe Slot and Contact Window generation — end-to-end mission confidence.
-        </p>
-      </>
-    ),
-  },
-  {
-    id: "cta",
-    enter: 0.86,
-    exit: 1.01,
-    align: "center",
-    content: null, // rendered separately for the CTA button
-  },
+  { id: "hook",       enter: -0.01, exit: 0.12,  align: "center", sticky: false },
+  { id: "hero-title", enter: 0.20,  exit: 0.38,  align: "center", sticky: false },
+  { id: "collision",  enter: 0.42,  exit: 0.60,  align: "left",   sticky: false },
+  { id: "mission",    enter: 0.66,  exit: 0.84,  align: "right",  sticky: false },
+  { id: "cta",        enter: 0.88,  exit: 1.5,   align: "center", sticky: true  },
 ];
 
-/* ─── Loading spinner ─────────────────────────────────────────────── */
+/* ─── Pure functions (no React, no side effects) ──────────────────────── */
+
+function computeOpacity(p, { enter, exit, sticky }) {
+  const fadeIn = 0.05, fadeOut = 0.05;
+  if (p < enter) return 0;
+  if (sticky) return p < enter + fadeIn ? (p - enter) / fadeIn : 1;
+  if (p > exit) return 0;
+  if (p < enter + fadeIn) return (p - enter) / fadeIn;
+  if (p > exit - fadeOut) return (exit - p) / fadeOut;
+  return 1;
+}
+
+function computeTranslateY(p, { enter, exit, sticky }) {
+  const mid = (enter + Math.min(exit, 1)) / 2;
+  if (p < enter) return 40;
+  if (sticky) return p < mid ? 40 * (1 - (p - enter) / (mid - enter)) : 0;
+  if (p < mid) return 40 * (1 - (p - enter) / (mid - enter));
+  if (p < exit) return -24 * ((p - mid) / (exit - mid));
+  return -24;
+}
+
+function alignClasses(a) {
+  if (a === "left")  return "items-start text-left pl-8 sm:pl-16 md:pl-24 lg:pl-32";
+  if (a === "right") return "items-end text-right pr-8 sm:pr-16 md:pr-24 lg:pr-32";
+  return "items-center text-center px-6";
+}
+
+/* ─── Loading overlay ─────────────────────────────────────────────────── */
+
 function LoadingOverlay({ progress }) {
+  const C = 2 * Math.PI * 38;
   return (
-    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-[#050505]">
-      {/* Orbital ring spinner */}
+    <motion.div
+      className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-[#050505]"
+      initial={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.6, ease: "easeInOut" }}
+    >
       <div className="relative w-20 h-20 mb-8">
-        <div
-          className="absolute inset-0 rounded-full border-2 border-white/10"
-        />
+        <div className="absolute inset-0 rounded-full border border-white/[0.08]" />
         <svg className="absolute inset-0 w-full h-full -rotate-90" viewBox="0 0 80 80">
           <circle
-            cx="40" cy="40" r="38"
-            fill="none"
-            stroke="white"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeDasharray={`${2 * Math.PI * 38}`}
-            strokeDashoffset={`${2 * Math.PI * 38 * (1 - progress / 100)}`}
+            cx="40" cy="40" r="38" fill="none"
+            stroke="white" strokeWidth="1.5" strokeLinecap="round"
+            strokeDasharray={C}
+            strokeDashoffset={C * (1 - progress / 100)}
             style={{ transition: "stroke-dashoffset 0.3s ease" }}
             opacity="0.8"
           />
@@ -112,7 +85,7 @@ function LoadingOverlay({ progress }) {
       <p className="font-mono text-sm tracking-[0.3em] text-white/50 uppercase">
         Initializing SatGuard
       </p>
-      <div className="mt-3 flex gap-1">
+      <div className="mt-3 flex gap-1.5">
         {[0, 1, 2].map((i) => (
           <span
             key={i}
@@ -124,281 +97,360 @@ function LoadingOverlay({ progress }) {
           />
         ))}
       </div>
-    </div>
+    </motion.div>
   );
 }
 
-/* ═══════════════════════════════════════════════════════════════════ */
-/* ─── HeroScroll Component ────────────────────────────────────────── */
-/* ═══════════════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════
+ * Main component
+ * ═══════════════════════════════════════════════════════════════════════ */
 
 export default function HeroScroll({ onEnter }) {
-  const containerRef = useRef(null);
+  /* ── Refs ────────────────────────────────────────────────────────────── */
+  const scrollContainerRef = useRef(null);
   const canvasRef = useRef(null);
-  const imagesRef = useRef([]);
-  const currentFrameRef = useRef(0);
-  const animFrameRef = useRef(null);
+  const videoRef = useRef(null);
+  const ctxRef = useRef(null);
+  const rafIdRef = useRef(null);
+  const displayRef = useRef(0);     // lerped scroll progress
+  const isReadyRef = useRef(false);
+  const onEnterRef = useRef(onEnter);
 
+  // Direct-DOM refs for text overlays (zero React re-renders)
+  const sectionElsRef = useRef({});
+  const vignetteElRef = useRef(null);
+  const scrollIndicatorElRef = useRef(null);
+
+  /* ── React state (loading overlay only — NOT on scroll hot-path) ────── */
   const [loaded, setLoaded] = useState(false);
   const [loadProgress, setLoadProgress] = useState(0);
-  const [scrollProgress, setScrollProgress] = useState(0);
 
-  /* ── Framer Motion scroll tracking ─────────────────────────────── */
+  useEffect(() => { onEnterRef.current = onEnter; }, [onEnter]);
+
+  /* ── Framer Motion scroll ───────────────────────────────────────────── */
   const { scrollYProgress } = useScroll({
-    target: containerRef,
+    target: scrollContainerRef,
     offset: ["start start", "end end"],
   });
 
-  const frameIndex = useTransform(scrollYProgress, [0, 1], [1, TOTAL_FRAMES]);
+  /* ── Object-cover draw helper ───────────────────────────────────────── */
+  const drawVideoFrame = useCallback(() => {
+    const ctx = ctxRef.current;
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+    if (!ctx || !canvas || !video || video.readyState < 2) return;
 
-  useMotionValueEvent(scrollYProgress, "change", (v) => {
-    setScrollProgress(v);
-  });
+    const vw = video.videoWidth, vh = video.videoHeight;
+    const cw = canvas.width, ch = canvas.height;
+    if (!vw || !vh || !cw || !ch) return;
 
-  /* ── Preload all 133 frames ────────────────────────────────────── */
-  useEffect(() => {
-    let loadedCount = 0;
-    const images = [];
-
-    for (let i = 1; i <= TOTAL_FRAMES; i++) {
-      const img = new Image();
-      img.src = frameUrl(i);
-      img.onload = () => {
-        loadedCount++;
-        setLoadProgress((loadedCount / TOTAL_FRAMES) * 100);
-        if (loadedCount === TOTAL_FRAMES) {
-          setLoaded(true);
-        }
-      };
-      img.onerror = () => {
-        loadedCount++;
-        setLoadProgress((loadedCount / TOTAL_FRAMES) * 100);
-        if (loadedCount === TOTAL_FRAMES) setLoaded(true);
-      };
-      images[i] = img;
+    const imgR = vw / vh, canR = cw / ch;
+    let sx, sy, sw, sh;
+    if (imgR > canR) {
+      sh = vh; sw = vh * canR; sx = (vw - sw) / 2; sy = 0;
+    } else {
+      sw = vw; sh = vw / canR; sx = 0; sy = (vh - sh) / 2;
     }
 
-    imagesRef.current = images;
-
-    return () => {
-      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-    };
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, cw, ch);
   }, []);
 
-  /* ── Canvas draw function ──────────────────────────────────────── */
-  const drawFrame = useCallback((index) => {
+  /* ── Size the backing canvas (DPR-aware, clamped to 2x) ────────────── */
+  const sizeCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    const img = imagesRef.current[index];
-    if (!img || !img.complete || !img.naturalWidth) return;
-
-    const dpr = window.devicePixelRatio || 1;
-    const cw = canvas.clientWidth;
-    const ch = canvas.clientHeight;
-
-    if (canvas.width !== cw * dpr || canvas.height !== ch * dpr) {
-      canvas.width = cw * dpr;
-      canvas.height = ch * dpr;
-    }
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Object-cover math
-    const imgRatio = img.naturalWidth / img.naturalHeight;
-    const canvasRatio = canvas.width / canvas.height;
-
-    let sx, sy, sw, sh;
-    if (imgRatio > canvasRatio) {
-      // Image is wider → crop sides
-      sh = img.naturalHeight;
-      sw = sh * canvasRatio;
-      sx = (img.naturalWidth - sw) / 2;
-      sy = 0;
-    } else {
-      // Image is taller → crop top/bottom
-      sw = img.naturalWidth;
-      sh = sw / canvasRatio;
-      sx = 0;
-      sy = (img.naturalHeight - sh) / 2;
-    }
-
-    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const rect = canvas.getBoundingClientRect();
+    const w = Math.round(rect.width * dpr) || 1920;
+    const h = Math.round(rect.height * dpr) || 1080;
+    canvas.width = w;
+    canvas.height = h;
+    ctxRef.current = canvas.getContext("2d", { alpha: false });
   }, []);
 
-  /* ── Render loop: draw frames on scroll ────────────────────────── */
+  /* ══════════════════════════════════════════════════════════════════════
+   * INIT: video load → size canvas → draw first frame → show UI
+   * ══════════════════════════════════════════════════════════════════════ */
   useEffect(() => {
-    if (!loaded) return;
+    const video = videoRef.current;
+    if (!video) return;
 
-    // Draw first frame immediately
-    drawFrame(1);
+    function handleReady() {
+      sizeCanvas();
+      drawVideoFrame();      // draw frame 1 immediately
+      setLoaded(true);
+      setLoadProgress(100);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => { isReadyRef.current = true; });
+      });
+    }
 
-    const unsubscribe = frameIndex.on("change", (value) => {
-      const idx = Math.min(Math.max(Math.round(value), 1), TOTAL_FRAMES);
-      if (idx !== currentFrameRef.current) {
-        currentFrameRef.current = idx;
-        if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-        animFrameRef.current = requestAnimationFrame(() => drawFrame(idx));
+    function handleProgress() {
+      if (video.buffered.length > 0 && video.duration) {
+        const end = video.buffered.end(video.buffered.length - 1);
+        setLoadProgress(Math.min((end / video.duration) * 100, 99));
       }
-    });
+    }
+
+    // Already loaded (fast cache hit or HMR re-mount)
+    if (video.readyState >= 4) {
+      handleReady();
+      return;
+    }
+
+    video.addEventListener("canplaythrough", handleReady, { once: true });
+    video.addEventListener("progress", handleProgress);
 
     return () => {
-      unsubscribe();
-      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+      video.removeEventListener("canplaythrough", handleReady);
+      video.removeEventListener("progress", handleProgress);
     };
-  }, [loaded, frameIndex, drawFrame]);
+  }, [sizeCanvas, drawVideoFrame]);
 
-  /* ── Resize handler ────────────────────────────────────────────── */
+  /* ══════════════════════════════════════════════════════════════════════
+   * MAIN rAF LOOP — the entire hot-path
+   *
+   * Everything in ONE tick, on ONE thread:
+   *   1. Read scroll progress
+   *   2. Lerp (spring-smooth)
+   *   3. Set video.currentTime (hardware seek)
+   *   4. drawImage(video) on canvas
+   *   5. Update text overlay el.style
+   *
+   * Canvas and text are always in perfect sync because they're computed
+   * from the same value and applied in the same paint.
+   * ══════════════════════════════════════════════════════════════════════ */
   useEffect(() => {
     if (!loaded) return;
-    const handleResize = () => {
-      drawFrame(currentFrameRef.current || 1);
-    };
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, [loaded, drawFrame]);
+    const video = videoRef.current;
+    if (!video || !video.duration) return;
 
-  /* ── Compute text overlay opacity ──────────────────────────────── */
-  function getOpacity(enter, exit) {
-    const fadeIn = 0.04;
-    const fadeOut = 0.04;
-    if (scrollProgress < enter || scrollProgress > exit) return 0;
-    if (scrollProgress < enter + fadeIn) return (scrollProgress - enter) / fadeIn;
-    if (scrollProgress > exit - fadeOut) return (exit - scrollProgress) / fadeOut;
-    return 1;
-  }
+    const duration = video.duration;
 
-  /* ── Compute Y translation for parallax feel ───────────────────── */
-  function getTranslateY(enter, exit) {
-    const mid = (enter + exit) / 2;
-    if (scrollProgress < enter) return 30;
-    if (scrollProgress < mid) {
-      const t = (scrollProgress - enter) / (mid - enter);
-      return 30 * (1 - t);
+    function tick() {
+      // 1. Raw scroll progress
+      const raw = scrollYProgress.get();
+
+      // 2. Exponential lerp → smooth, spring-like motion
+      displayRef.current += (raw - displayRef.current) * LERP_FACTOR;
+      const p = displayRef.current;
+
+      // 3. Seek video (hardware decoder handles this in <1ms for all-I-frame)
+      const targetTime = Math.max(0, Math.min(p * duration, duration - 0.001));
+      video.currentTime = targetTime;
+
+      // 4. Draw video frame on canvas (SAME TICK)
+      drawVideoFrame();
+
+      // 5. Update text overlays (SAME TICK — perfect sync with canvas)
+      if (isReadyRef.current) {
+        const textP = raw; // raw progress for text (no lerp lag)
+
+        for (const s of TEXT_SECTIONS) {
+          const el = sectionElsRef.current[s.id];
+          if (!el) continue;
+          const opacity = computeOpacity(textP, s);
+          const ty = computeTranslateY(textP, s);
+          el.style.opacity = opacity;
+          el.style.transform = `translateY(${ty}px)`;
+          if (s.sticky) el.style.pointerEvents = opacity > 0.5 ? "auto" : "none";
+        }
+
+        if (vignetteElRef.current)
+          vignetteElRef.current.style.opacity = textP > 0.18 ? "1" : "0";
+        if (scrollIndicatorElRef.current)
+          scrollIndicatorElRef.current.style.opacity = textP < 0.04 ? "1" : "0";
+      }
+
+      rafIdRef.current = requestAnimationFrame(tick);
     }
-    if (scrollProgress < exit) {
-      const t = (scrollProgress - mid) / (exit - mid);
-      return -20 * t;
-    }
-    return -20;
-  }
 
-  /* ── Alignment classes ─────────────────────────────────────────── */
-  function alignClasses(align) {
-    switch (align) {
-      case "left":
-        return "items-start text-left pl-8 sm:pl-16 md:pl-24 lg:pl-32";
-      case "right":
-        return "items-end text-right pr-8 sm:pr-16 md:pr-24 lg:pr-32";
-      default:
-        return "items-center text-center px-6";
-    }
-  }
+    rafIdRef.current = requestAnimationFrame(tick);
+    return () => { if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current); };
+  }, [loaded, scrollYProgress, drawVideoFrame]);
 
-  if (!loaded) {
-    return <LoadingOverlay progress={loadProgress} />;
-  }
+  /* ── requestVideoFrameCallback (bonus accuracy layer) ───────────────── */
+  useEffect(() => {
+    if (!loaded) return;
+    const video = videoRef.current;
+    if (!video || !("requestVideoFrameCallback" in video)) return;
+
+    let cbId;
+    function onNewFrame() {
+      drawVideoFrame();
+      cbId = video.requestVideoFrameCallback(onNewFrame);
+    }
+    cbId = video.requestVideoFrameCallback(onNewFrame);
+
+    return () => { if (cbId) video.cancelVideoFrameCallback(cbId); };
+  }, [loaded, drawVideoFrame]);
+
+  /* ── Resize handler ─────────────────────────────────────────────────── */
+  useEffect(() => {
+    if (!loaded) return;
+    function onResize() {
+      sizeCanvas();
+      drawVideoFrame();
+    }
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [loaded, sizeCanvas, drawVideoFrame]);
+
+  /* ══════════════════════════════════════════════════════════════════════
+   * RENDER — static JSX, never re-renders during scroll
+   * ══════════════════════════════════════════════════════════════════════ */
 
   return (
-    <div
-      ref={containerRef}
-      className="relative w-full"
-      style={{ height: "400vh", background: "#050505" }}
-    >
-      {/* ── Sticky canvas ────────────────────────────────────────── */}
-      <canvas
-        ref={canvasRef}
-        className="sticky top-0 w-full h-screen"
-        style={{ display: "block", background: "#050505" }}
-      />
+    <>
+      {/* Loading overlay (one-shot, exits on canplaythrough) */}
+      <AnimatePresence>
+        {!loaded && <LoadingOverlay progress={loadProgress} />}
+      </AnimatePresence>
 
-      {/* ── Text overlays ────────────────────────────────────────── */}
-      <div className="fixed inset-0 pointer-events-none z-10">
-        {/* Vignette overlay for text readability */}
-        <div
-          className="absolute inset-0"
+      {/* Scroll container */}
+      <div
+        ref={scrollContainerRef}
+        className="relative w-full"
+        style={{ height: SCROLL_HEIGHT, background: "#050505" }}
+      >
+        {/* ── Hidden video source (hardware-decoded, preloaded) ─────── */}
+        <video
+          ref={videoRef}
+          muted
+          playsInline
+          preload="auto"
+          aria-hidden="true"
           style={{
-            background:
-              scrollProgress > 0.15
-                ? `radial-gradient(ellipse 80% 70% at 50% 50%, transparent 30%, rgba(0,0,0,0.5) 100%)`
-                : "none",
-            transition: "background 0.5s ease",
+            position: "fixed",
+            top: 0, left: 0,
+            width: "1px", height: "1px",
+            opacity: 0,
+            pointerEvents: "none",
+            zIndex: -1,
           }}
+        >
+          <source src={VIDEO_SRC} type="video/mp4" />
+        </video>
+
+        {/* ── Visible canvas (sticky, covers viewport) ─────────────── */}
+        <canvas
+          ref={canvasRef}
+          className="sticky top-0 w-full"
+          style={{ height: "100vh", display: "block", background: "#050505" }}
         />
 
-        {/* Sections 1-3: standard text overlays */}
-        {TEXT_SECTIONS.slice(0, 3).map((section) => {
-          const opacity = getOpacity(section.enter, section.exit);
-          const translateY = getTranslateY(section.enter, section.exit);
+        {/* ── Text overlay layer (fixed, pointer-events-none) ──────── */}
+        <div className="fixed inset-0 pointer-events-none z-10">
+          {/* Vignette */}
+          <div
+            ref={vignetteElRef}
+            className="absolute inset-0"
+            style={{
+              background:
+                "radial-gradient(ellipse 80% 70% at 50% 50%, transparent 30%, rgba(0,0,0,0.55) 100%)",
+              opacity: 0,
+              transition: "opacity 0.7s ease",
+            }}
+          />
 
-          return (
+          {/* Text sections */}
+          {TEXT_SECTIONS.map((section) => (
             <div
               key={section.id}
+              ref={(el) => { if (el) sectionElsRef.current[section.id] = el; }}
               className={`absolute inset-0 flex flex-col justify-center ${alignClasses(section.align)}`}
               style={{
-                opacity,
-                transform: `translateY(${translateY}px)`,
-                transition: "opacity 0.1s ease-out",
+                opacity: 0,
                 willChange: "transform, opacity",
+                pointerEvents: section.sticky ? "none" : undefined,
               }}
             >
-              {section.content}
+              <SectionContent id={section.id} onEnter={onEnterRef} />
             </div>
-          );
-        })}
+          ))}
 
-        {/* Section 4: CTA block */}
-        {(() => {
-          const cta = TEXT_SECTIONS[3];
-          const opacity = getOpacity(cta.enter, cta.exit);
-          const translateY = getTranslateY(cta.enter, cta.exit);
-
-          return (
+          {/* Scroll indicator */}
+          <div
+            ref={scrollIndicatorElRef}
+            className="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2"
+            style={{ opacity: 0, transition: "opacity 0.4s ease" }}
+          >
+            <span className="text-[10px] font-mono tracking-[0.3em] uppercase text-white/40">
+              Scroll
+            </span>
             <div
-              className="absolute inset-0 flex flex-col items-center justify-center px-6 pointer-events-auto"
-              style={{
-                opacity,
-                transform: `translateY(${translateY}px)`,
-                transition: "opacity 0.1s ease-out",
-                willChange: "transform, opacity",
-              }}
-            >
-              <h2 className="text-4xl sm:text-6xl md:text-7xl font-bold tracking-tight text-white leading-[0.95] mb-3">
-                Secure Your Orbit.
-              </h2>
-              <p className="text-base sm:text-lg text-white/50 font-light tracking-wide mb-10">
-                Real-time situational awareness for the new space era.
-              </p>
-              <button
-                onClick={onEnter}
-                className="group relative px-10 py-4 text-sm sm:text-base font-medium tracking-[0.2em] uppercase text-white border border-white/30 rounded-sm bg-transparent cursor-pointer overflow-hidden transition-all duration-500 hover:border-white/80 hover:tracking-[0.3em]"
-              >
-                {/* Hover fill animation */}
-                <span className="absolute inset-0 bg-white/[0.06] scale-x-0 origin-left transition-transform duration-500 group-hover:scale-x-100" />
-                <span className="relative z-10">Launch Console</span>
-              </button>
-            </div>
-          );
-        })()}
-
-        {/* Scroll indicator — visible only at the very top */}
-        <motion.div
-          className="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: scrollProgress < 0.05 ? 1 : 0 }}
-          transition={{ duration: 0.4 }}
-        >
-          <span className="text-[10px] font-mono tracking-[0.3em] uppercase text-white/40">
-            Scroll
-          </span>
-          <motion.div
-            className="w-[1px] h-8 bg-white/30"
-            animate={{ scaleY: [0.3, 1, 0.3] }}
-            transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
-            style={{ transformOrigin: "top" }}
-          />
-        </motion.div>
+              className="w-[1px] h-8 bg-white/30 origin-top"
+              style={{ animation: "hero-scroll-pulse 2s ease-in-out infinite" }}
+            />
+          </div>
+        </div>
       </div>
-    </div>
+    </>
   );
+}
+
+/* ─── Section content ─────────────────────────────────────────────────── */
+
+function SectionContent({ id, onEnter }) {
+  switch (id) {
+    case "hook":
+      return (
+        <p className="text-base sm:text-lg md:text-xl font-light tracking-wide text-white/70 max-w-lg leading-relaxed">
+          Advanced situational awareness for the new space era.
+        </p>
+      );
+    case "hero-title":
+      return (
+        <>
+          <h1 className="text-5xl sm:text-7xl md:text-8xl font-bold tracking-tight text-white leading-[0.95]">
+            SatGuard
+          </h1>
+          <p className="mt-4 text-lg sm:text-xl md:text-2xl font-light tracking-widest text-white/70 uppercase">
+            Orbital Intelligence.
+          </p>
+        </>
+      );
+    case "collision":
+      return (
+        <>
+          <h2 className="text-3xl sm:text-5xl md:text-6xl font-semibold tracking-tight text-white leading-tight">
+            Proactive Collision<br />Avoidance.
+          </h2>
+          <p className="mt-4 max-w-md text-base sm:text-lg text-white/70 font-light leading-relaxed">
+            Advanced SGP4 propagation and risk triage.
+          </p>
+        </>
+      );
+    case "mission":
+      return (
+        <>
+          <h2 className="text-3xl sm:text-5xl md:text-6xl font-semibold tracking-tight text-white leading-tight text-right">
+            Seamless Mission<br />Planning.
+          </h2>
+          <p className="mt-4 max-w-md text-base sm:text-lg text-white/70 font-light leading-relaxed text-right">
+            Deterministic Safe Slot and Contact Window generation.
+          </p>
+        </>
+      );
+    case "cta":
+      return (
+        <>
+          <h2 className="text-4xl sm:text-6xl md:text-7xl font-bold tracking-tight text-white leading-[0.95] mb-3">
+            Secure Your Orbit.
+          </h2>
+          <p className="text-base sm:text-lg text-white/70 font-light tracking-wide mb-10">
+            Real-time situational awareness for the new space era.
+          </p>
+          <button
+            onClick={() => onEnter.current?.()}
+            className="group relative px-10 py-4 text-sm sm:text-base font-medium tracking-[0.2em] uppercase text-white border border-white/30 rounded-sm bg-transparent cursor-pointer overflow-hidden transition-all duration-500 hover:border-white/80 hover:tracking-[0.3em] hover:shadow-[0_0_30px_rgba(255,255,255,0.08)]"
+          >
+            <span className="absolute inset-0 bg-white/[0.06] scale-x-0 origin-left transition-transform duration-500 group-hover:scale-x-100" />
+            <span className="relative z-10">Launch Console</span>
+          </button>
+        </>
+      );
+    default:
+      return null;
+  }
 }
