@@ -12,10 +12,12 @@
 
 import { create } from "zustand";
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+// Strip trailing slash so fetch URLs never double-slash (e.g. base/ + /api/health)
+const API_BASE = (import.meta.env.VITE_API_BASE || "http://localhost:8000").replace(/\/+$/, "");
 
-const FETCH_TIMEOUT_MS = 30_000; // 30 seconds (cold start can take 15-30s)
-const HEALTH_TIMEOUT_MS = 5_000; // 5 seconds for health check
+// Render free tier cold start: 30-60s. Give it 70s before giving up.
+const HEALTH_TIMEOUT_MS = 70_000;
+const FETCH_TIMEOUT_MS  = 90_000;
 
 // Track in-flight fetch so Retry can cancel a stale request
 let _inflightController = null;
@@ -119,14 +121,19 @@ const useSatguardStore = create((set) => ({
       } catch (healthErr) {
         clearTimeout(healthTimeout);
         if (_inflightController !== controller) return;
+        const isLocal = API_BASE.includes("localhost") || API_BASE.includes("127.0.0.1");
+        const isColdStart = healthErr?.name === "AbortError";
+        const hint = isLocal
+          ? "Start the backend with: uvicorn app.main:app --reload"
+          : isColdStart
+          ? "The server is cold-starting (can take 60s on free hosting). Click Retry in a moment."
+          : "Check that your Render deployment is active and the CORS origin is set correctly.";
         set((s) => ({
           tleData: {
             ...s.tleData,
             loading: false,
             retryCount: currentRetry + 1,
-            error:
-              `Backend server not reachable at ${API_BASE}.\n` +
-              "Start the backend with: uvicorn app.main:app --reload",
+            error: `Backend not reachable at ${API_BASE}.\n${hint}`,
           },
         }));
         if (_inflightController === controller) _inflightController = null;
