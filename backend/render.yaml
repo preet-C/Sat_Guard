@@ -1,0 +1,25 @@
+# =============================================================================
+# Render.com — Infrastructure as Code
+# =============================================================================
+# This file auto-configures the SatGuard backend when imported into Render.
+# Dashboard → New → Blueprint → Connect Repo → Render detects this file.
+
+services:
+  - type: web
+    name: satguard-api
+    runtime: python
+    region: oregon
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: SPACETRACK_USER
+        sync: false  # Must be set manually in Render dashboard
+      - key: SPACETRACK_PASS
+        sync: false
+      - key: FRONTEND_URL
+        value: http://localhost:5173,https://satguard.pages.dev
+      - key: ENVIRONMENT
+        value: production
+    healthCheckPath: /api/health
