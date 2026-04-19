@@ -1,5 +1,29 @@
+# ── Dependencies ─────────────────────────────────────────────────
 frontend/node_modules
 backend/venv
+
+# ── Python artifacts ─────────────────────────────────────────────
 __pycache__
 *.pyc
+*.pyo
+
+# ── Environment / secrets ────────────────────────────────────────
 .env
+.env.local
+.env.production
+!.env.example
+
+# ── Build output ─────────────────────────────────────────────────
+frontend/dist
+backend/__pycache__
+
+# ── IDE ──────────────────────────────────────────────────────────
+.vscode/
+.idea/
+
+# ── OS junk ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Deprecated legacy JPEG sequence (replaced by hero-sequence.mp4) ──
+frontend/public/hero-sequence/

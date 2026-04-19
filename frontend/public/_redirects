@@ -1,0 +1,3 @@
+# SPA fallback — serve index.html for all routes not matching a static file.
+# This prevents 404 errors when the user refreshes on a client-side route.
+/*  /index.html  200
