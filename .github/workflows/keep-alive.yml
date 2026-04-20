@@ -1,0 +1,29 @@
+name: Keep Backend Alive
+
+# Runs every 14 minutes — just under Render's 15-min sleep threshold.
+# This prevents cold starts entirely on the free tier.
+on:
+  schedule:
+    - cron: '*/14 * * * *'   # every 14 minutes, 24/7
+  workflow_dispatch:           # allow manual trigger from GitHub Actions UI
+
+jobs:
+  ping:
+    name: Ping Render Backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Wake up backend
+        run: |
+          echo "Pinging https://satguard-api.onrender.com/api/health ..."
+          STATUS=$(curl -s -o response.json -w "%{http_code}" \
+            --max-time 90 \
+            https://satguard-api.onrender.com/api/health)
+          echo "HTTP Status: $STATUS"
+          cat response.json
+          if [ "$STATUS" != "200" ]; then
+            echo "WARNING: Backend returned $STATUS"
+            exit 1
+          fi
+          echo "Backend is alive."
