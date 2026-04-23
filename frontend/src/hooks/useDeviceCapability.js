@@ -1,83 +1,82 @@
 /**
  * useDeviceCapability.js — Device capability detection for SatGuard
  *
- * Detects:
- *   • Mobile/tablet vs desktop (screen size + touch + UA heuristics)
- *   • Low-end hardware (core count, deviceMemory, reduced-motion pref)
- *   • WebGL support (required for CesiumJS dashboard)
- *   • Video scrub support (required for scrollytelling)
+ * PHILOSOPHY: Be extremely permissive. Only block features when we are
+ * CERTAIN the device cannot run them. A desktop with "reduce motion"
+ * enabled is NOT a reason to kill scrollytelling. A touch-screen laptop
+ * is NOT mobile.
  *
- * IMPORTANT: This never blocks desktop users. It only gates mobile/low-end
- * paths to prevent broken UX.
+ * The ONLY hard gates:
+ *   • Scrollytelling: blocked on real phones (mobile UA + small screen)
+ *   • Dashboard: blocked when there is NO WebGL at all
  */
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
 
-/* ── Static detections (computed once, never change) ──────────────── */
+/* ── Static detections ───────────────────────────────────────────────── */
 
 function detectCapabilities() {
   const ua = navigator.userAgent || "";
-  const platform = navigator.platform || "";
 
-  // ── Mobile/Tablet detection ──
-  const isMobileUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
-  const isTouchPrimary =
-    typeof window !== "undefined" &&
-    (("ontouchstart" in window) || navigator.maxTouchPoints > 0);
-  const isSmallScreen = typeof window !== "undefined" && window.innerWidth < 768;
-  const isMedScreen = typeof window !== "undefined" && window.innerWidth < 1024;
-  // iPad in desktop mode reports "MacIntel" but has touch
-  const isIPadDesktopMode = platform === "MacIntel" && navigator.maxTouchPoints > 1;
+  // ── True phone detection (MUST match UA AND have small screen) ──
+  // Touch-screen laptops, 2-in-1s, and tablets with keyboards are NOT phones.
+  const isMobileUA = /Android|webOS|iPhone|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+  // Note: iPad is intentionally NOT in the list. iPads are tablets, not phones.
+  const isPhoneScreen = typeof window !== "undefined" && window.screen.width < 768;
+  // Use screen.width (physical), not innerWidth (can change with window resize)
 
-  const isMobile = isMobileUA || isSmallScreen || isIPadDesktopMode;
-  const isTablet = !isSmallScreen && isMedScreen && (isTouchPrimary || isIPadDesktopMode);
+  const isMobile = isMobileUA && isPhoneScreen;
 
-  // ── Hardware tier ──
-  const cores = navigator.hardwareConcurrency || 2;
-  const memory = navigator.deviceMemory || 4; // GB, defaults to 4 if unsupported
+  // ── Tablet: iPad or Android tablet ──
+  const isIPad = /iPad/i.test(ua) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const isAndroidTablet = /Android/i.test(ua) && !/Mobile/i.test(ua);
+  const isTablet = isIPad || isAndroidTablet;
+
+  // ── Hardware info (informational only, NOT used for gating) ──
+  const cores = navigator.hardwareConcurrency || 4;
+  const memory = navigator.deviceMemory || 4;
   const prefersReducedMotion =
     typeof window !== "undefined" &&
     window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-  const isLowEnd = cores <= 2 || memory <= 2 || prefersReducedMotion;
 
   // ── WebGL check (required for CesiumJS) ──
   let hasWebGL = false;
   try {
     const c = document.createElement("canvas");
-    hasWebGL = !!(c.getContext("webgl") || c.getContext("experimental-webgl"));
+    hasWebGL = !!(c.getContext("webgl2") || c.getContext("webgl") || c.getContext("experimental-webgl"));
   } catch {
     hasWebGL = false;
   }
 
-  // ── Video element support ──
+  // ── Video / Canvas support ──
   const hasVideo = typeof HTMLVideoElement !== "undefined";
   const hasRVFC = hasVideo && "requestVideoFrameCallback" in HTMLVideoElement.prototype;
-
-  // ── Canvas 2D (always available, but check anyway) ──
   let hasCanvas2D = false;
   try {
-    const c = document.createElement("canvas");
-    hasCanvas2D = !!c.getContext("2d");
+    hasCanvas2D = !!document.createElement("canvas").getContext("2d");
   } catch {
     hasCanvas2D = false;
   }
 
-  // ── Scrollytelling capability ──
-  // Desktop with video support = full video scrubbing
-  // Mobile or low-end = static fallback (poster + text)
-  const canRunScrollytelling = !isMobile && hasVideo && hasCanvas2D && !prefersReducedMotion;
+  // ══════════════════════════════════════════════════════════════════
+  // CAPABILITY GATES — intentionally permissive
+  // ══════════════════════════════════════════════════════════════════
 
-  // ── Dashboard capability ──
-  // Requires WebGL + reasonable hardware + desktop
-  const canRunDashboard = hasWebGL && !isMobile && !isLowEnd;
+  // Scrollytelling: only block on REAL phones.
+  // Desktop with reduce-motion? Fine — let the video scrub run.
+  // Touch-screen laptop? Fine. Tablet? Fine (landscape is big enough).
+  // The ONLY thing that kills it: a genuine phone with a tiny screen.
+  const canRunScrollytelling = hasVideo && hasCanvas2D && !isMobile;
+
+  // Dashboard: only block if there is literally no WebGL.
+  // Mobile phones get the warning, but tablets and everything else proceed.
+  const canRunDashboard = hasWebGL && !isMobile;
 
   return {
     isMobile,
     isTablet,
-    isSmallScreen,
-    isTouchPrimary,
-    isLowEnd,
+    isPhoneScreen,
     hasWebGL,
     hasVideo,
     hasRVFC,
@@ -90,7 +89,7 @@ function detectCapabilities() {
   };
 }
 
-/* ── Singleton cache (avoids re-computation) ──────────────────────── */
+/* ── Singleton cache ─────────────────────────────────────────────────── */
 let cachedCapabilities = null;
 
 export function getDeviceCapabilities() {
@@ -100,20 +99,11 @@ export function getDeviceCapabilities() {
   return cachedCapabilities;
 }
 
-/* ── React hook ───────────────────────────────────────────────────── */
+/* ── React hook ──────────────────────────────────────────────────────── */
 export default function useDeviceCapability() {
-  const [caps, setCaps] = useState(() => getDeviceCapabilities());
-
-  // Re-detect on resize (handles orientation changes on tablets)
-  useEffect(() => {
-    function handleResize() {
-      cachedCapabilities = null; // bust cache
-      setCaps(detectCapabilities());
-    }
-
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, []);
-
+  // Compute once on mount — do NOT re-detect on resize.
+  // window.screen.width is physical and doesn't change.
+  // Re-detecting on resize caused flickering between modes.
+  const [caps] = useState(() => getDeviceCapabilities());
   return caps;
 }

@@ -67,6 +67,8 @@ function StaticHeroFallback({ onEnter, isMobile }) {
 
   // Extract first frame from video as poster (avoids needing a separate image file)
   useEffect(() => {
+    let didLoad = false;
+
     const video = document.createElement("video");
     video.muted = true;
     video.playsInline = true;
@@ -75,6 +77,7 @@ function StaticHeroFallback({ onEnter, isMobile }) {
     video.src = VIDEO_SRC;
 
     function handleLoaded() {
+      didLoad = true;
       try {
         const canvas = document.createElement("canvas");
         canvas.width = Math.min(video.videoWidth, 1280);
@@ -83,19 +86,19 @@ function StaticHeroFallback({ onEnter, isMobile }) {
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         setPosterUrl(canvas.toDataURL("image/jpeg", 0.85));
       } catch {
-        // If CORS or decode fails, use solid dark bg (still looks premium)
-        setPosterUrl(null);
+        // CORS or decode fail — gradient bg will be used instead
       }
+      setFadeIn(true);
       video.remove();
     }
 
     video.addEventListener("loadeddata", handleLoaded, { once: true });
     video.load();
 
-    // Timeout — don't block the UI if video is slow to load
+    // Timeout: if video hasn't loaded in 3s, just show UI without poster.
+    // NEVER clear an already-set posterUrl.
     const timeout = setTimeout(() => {
-      setPosterUrl(null);
-      setFadeIn(true);
+      if (!didLoad) setFadeIn(true);
     }, 3000);
 
     return () => {
@@ -104,11 +107,6 @@ function StaticHeroFallback({ onEnter, isMobile }) {
       video.remove();
     };
   }, []);
-
-  useEffect(() => {
-    const timer = setTimeout(() => setFadeIn(true), 100);
-    return () => clearTimeout(timer);
-  }, [posterUrl]);
 
   return (
     <div
