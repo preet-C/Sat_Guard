@@ -1,21 +1,22 @@
 import { useRef, useEffect, useState, useCallback } from "react";
 import { useScroll, motion, AnimatePresence } from "framer-motion";
+import useDeviceCapability from "../hooks/useDeviceCapability";
 
 /* ═══════════════════════════════════════════════════════════════════════
- * HeroScroll — Video-Scrub Architecture
+ * HeroScroll — Video-Scrub Architecture (with graceful degradation)
  *
- * Single-asset MP4 scrubbing. Zero workers. Zero message passing.
- * Canvas draw AND text overlay updates happen in the SAME rAF tick
- * → frame-perfect sync, zero drift.
+ * DESKTOP (capable): Full video scrubbing via video.currentTime + canvas
+ * MOBILE / LOW-END:  Static poster + text, no video, no scroll-linked
+ *                    animation. Clean UX with immediate CTA.
  *
- * Data flow (one rAF tick):
+ * Data flow (desktop, one rAF tick):
  *   scrollYProgress.get() → lerp → video.currentTime → drawImage → el.style
  *   All synchronous. All main-thread. All in one paint.
  * ═══════════════════════════════════════════════════════════════════════ */
 
 const VIDEO_SRC = "/hero-sequence.mp4";
 const SCROLL_HEIGHT = "500vh";
-const LERP_FACTOR = 0.12; // lower = smoother, higher = snappier
+const LERP_FACTOR = 0.12;
 
 /* ─── Text overlay timeline ───────────────────────────────────────────── */
 const TEXT_SECTIONS = [
@@ -51,6 +52,153 @@ function alignClasses(a) {
   if (a === "left")  return "items-start text-left pl-8 sm:pl-16 md:pl-24 lg:pl-32";
   if (a === "right") return "items-end text-right pr-8 sm:pr-16 md:pr-24 lg:pr-32";
   return "items-center text-center px-6";
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * STATIC FALLBACK — for mobile / tablet / low-end devices
+ *
+ * Shows a video poster frame as the background with all key content
+ * visible immediately. No scroll-linked animation, no canvas, no rAF.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+function StaticHeroFallback({ onEnter, isMobile }) {
+  const [posterUrl, setPosterUrl] = useState(null);
+  const [fadeIn, setFadeIn] = useState(false);
+
+  // Extract first frame from video as poster (avoids needing a separate image file)
+  useEffect(() => {
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+    video.crossOrigin = "anonymous";
+    video.src = VIDEO_SRC;
+
+    function handleLoaded() {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.min(video.videoWidth, 1280);
+        canvas.height = Math.min(video.videoHeight, 720);
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        setPosterUrl(canvas.toDataURL("image/jpeg", 0.85));
+      } catch {
+        // If CORS or decode fails, use solid dark bg (still looks premium)
+        setPosterUrl(null);
+      }
+      video.remove();
+    }
+
+    video.addEventListener("loadeddata", handleLoaded, { once: true });
+    video.load();
+
+    // Timeout — don't block the UI if video is slow to load
+    const timeout = setTimeout(() => {
+      setPosterUrl(null);
+      setFadeIn(true);
+    }, 3000);
+
+    return () => {
+      clearTimeout(timeout);
+      video.removeEventListener("loadeddata", handleLoaded);
+      video.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setFadeIn(true), 100);
+    return () => clearTimeout(timer);
+  }, [posterUrl]);
+
+  return (
+    <div
+      className="relative w-full min-h-screen flex flex-col"
+      style={{
+        background: posterUrl
+          ? `linear-gradient(to bottom, rgba(5,5,5,0.2) 0%, rgba(5,5,5,0.7) 60%, rgba(5,5,5,0.95) 100%), url(${posterUrl}) center/cover no-repeat`
+          : "radial-gradient(ellipse 120% 80% at 50% 30%, #0a1628 0%, #050505 70%)",
+      }}
+    >
+      {/* Main content — centered, scrollable on small screens */}
+      <div
+        className="flex-1 flex flex-col items-center justify-center px-6 py-16"
+        style={{
+          opacity: fadeIn ? 1 : 0,
+          transform: fadeIn ? "translateY(0)" : "translateY(20px)",
+          transition: "opacity 0.8s ease, transform 0.8s ease",
+        }}
+      >
+        {/* Hook text */}
+        <p className="text-sm sm:text-base font-light tracking-wide text-white/50 mb-8 text-center max-w-md leading-relaxed">
+          Advanced situational awareness for the new space era.
+        </p>
+
+        {/* Main title */}
+        <h1 className="text-5xl sm:text-6xl md:text-7xl font-bold tracking-tight text-white leading-[0.95] mb-4 text-center">
+          SatGuard
+        </h1>
+        <p className="text-base sm:text-lg font-light tracking-widest text-white/60 uppercase mb-12 text-center">
+          Orbital Intelligence.
+        </p>
+
+        {/* Feature pills */}
+        <div className="flex flex-wrap justify-center gap-3 mb-12 max-w-lg">
+          {[
+            "Collision Avoidance",
+            "Mission Planning",
+            "Contact Windows",
+            "Safe Slot Search",
+          ].map((feature) => (
+            <span
+              key={feature}
+              className="text-xs font-mono tracking-wider uppercase px-4 py-2 rounded-full"
+              style={{
+                background: "rgba(0, 212, 255, 0.06)",
+                border: "1px solid rgba(0, 212, 255, 0.2)",
+                color: "rgba(0, 212, 255, 0.8)",
+              }}
+            >
+              {feature}
+            </span>
+          ))}
+        </div>
+
+        {/* CTA */}
+        <button
+          onClick={onEnter}
+          className="group relative px-10 py-4 text-sm sm:text-base font-medium tracking-[0.2em] uppercase text-white border border-white/30 rounded-sm bg-transparent cursor-pointer overflow-hidden transition-all duration-500 hover:border-white/80 hover:shadow-[0_0_30px_rgba(255,255,255,0.08)] active:scale-95"
+        >
+          <span className="absolute inset-0 bg-white/[0.06] scale-x-0 origin-left transition-transform duration-500 group-hover:scale-x-100" />
+          <span className="relative z-10">Launch Console</span>
+        </button>
+
+        {/* Device notice */}
+        {isMobile && (
+          <div
+            className="mt-8 px-5 py-3 rounded-lg text-center max-w-sm"
+            style={{
+              background: "rgba(255, 165, 2, 0.08)",
+              border: "1px solid rgba(255, 165, 2, 0.25)",
+            }}
+          >
+            <p className="text-xs text-white/70 leading-relaxed">
+              <span style={{ color: "#ffa502", fontWeight: 600 }}>Note:</span>{" "}
+              SatGuard's 3D orbital dashboard is optimized for desktop browsers with WebGL support.
+              For the best experience, open this page on a laptop or desktop computer.
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Decorative gradient overlay at bottom */}
+      <div
+        className="absolute bottom-0 left-0 right-0 h-32 pointer-events-none"
+        style={{
+          background: "linear-gradient(to top, #050505 0%, transparent 100%)",
+        }}
+      />
+    </div>
+  );
 }
 
 /* ─── Loading overlay ─────────────────────────────────────────────────── */
@@ -106,34 +254,36 @@ function LoadingOverlay({ progress }) {
  * ═══════════════════════════════════════════════════════════════════════ */
 
 export default function HeroScroll({ onEnter }) {
-  /* ── Refs ────────────────────────────────────────────────────────────── */
+  /* ── Device capability check ──────────────────────────────────────── */
+  const caps = useDeviceCapability();
+
+  /* ── Refs (only initialised if desktop path is taken) ────────────── */
   const scrollContainerRef = useRef(null);
   const canvasRef = useRef(null);
   const videoRef = useRef(null);
   const ctxRef = useRef(null);
   const rafIdRef = useRef(null);
-  const displayRef = useRef(0);     // lerped scroll progress
+  const displayRef = useRef(0);
   const isReadyRef = useRef(false);
   const onEnterRef = useRef(onEnter);
 
-  // Direct-DOM refs for text overlays (zero React re-renders)
   const sectionElsRef = useRef({});
   const vignetteElRef = useRef(null);
   const scrollIndicatorElRef = useRef(null);
 
-  /* ── React state (loading overlay only — NOT on scroll hot-path) ────── */
+  /* ── React state (loading overlay only) ──────────────────────────── */
   const [loaded, setLoaded] = useState(false);
   const [loadProgress, setLoadProgress] = useState(0);
 
   useEffect(() => { onEnterRef.current = onEnter; }, [onEnter]);
 
-  /* ── Framer Motion scroll ───────────────────────────────────────────── */
+  /* ── Framer Motion scroll ───────────────────────────────────────── */
   const { scrollYProgress } = useScroll({
     target: scrollContainerRef,
     offset: ["start start", "end end"],
   });
 
-  /* ── Object-cover draw helper ───────────────────────────────────────── */
+  /* ── Object-cover draw helper ───────────────────────────────────── */
   const drawVideoFrame = useCallback(() => {
     const ctx = ctxRef.current;
     const canvas = canvasRef.current;
@@ -155,7 +305,7 @@ export default function HeroScroll({ onEnter }) {
     ctx.drawImage(video, sx, sy, sw, sh, 0, 0, cw, ch);
   }, []);
 
-  /* ── Size the backing canvas (DPR-aware, clamped to 2x) ────────────── */
+  /* ── Size the backing canvas (DPR-aware, clamped to 2x) ────────── */
   const sizeCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -168,16 +318,18 @@ export default function HeroScroll({ onEnter }) {
     ctxRef.current = canvas.getContext("2d", { alpha: false });
   }, []);
 
-  /* ══════════════════════════════════════════════════════════════════════
+  /* ══════════════════════════════════════════════════════════════════
    * INIT: video load → size canvas → draw first frame → show UI
-   * ══════════════════════════════════════════════════════════════════════ */
+   * Only runs when canRunScrollytelling is true (desktop)
+   * ══════════════════════════════════════════════════════════════════ */
   useEffect(() => {
+    if (!caps.canRunScrollytelling) return;
     const video = videoRef.current;
     if (!video) return;
 
     function handleReady() {
       sizeCanvas();
-      drawVideoFrame();      // draw frame 1 immediately
+      drawVideoFrame();
       setLoaded(true);
       setLoadProgress(100);
       requestAnimationFrame(() => {
@@ -192,7 +344,6 @@ export default function HeroScroll({ onEnter }) {
       }
     }
 
-    // Already loaded (fast cache hit or HMR re-mount)
     if (video.readyState >= 4) {
       handleReady();
       return;
@@ -205,47 +356,29 @@ export default function HeroScroll({ onEnter }) {
       video.removeEventListener("canplaythrough", handleReady);
       video.removeEventListener("progress", handleProgress);
     };
-  }, [sizeCanvas, drawVideoFrame]);
+  }, [caps.canRunScrollytelling, sizeCanvas, drawVideoFrame]);
 
-  /* ══════════════════════════════════════════════════════════════════════
-   * MAIN rAF LOOP — the entire hot-path
-   *
-   * Everything in ONE tick, on ONE thread:
-   *   1. Read scroll progress
-   *   2. Lerp (spring-smooth)
-   *   3. Set video.currentTime (hardware seek)
-   *   4. drawImage(video) on canvas
-   *   5. Update text overlay el.style
-   *
-   * Canvas and text are always in perfect sync because they're computed
-   * from the same value and applied in the same paint.
-   * ══════════════════════════════════════════════════════════════════════ */
+  /* ══════════════════════════════════════════════════════════════════
+   * MAIN rAF LOOP (desktop only)
+   * ══════════════════════════════════════════════════════════════════ */
   useEffect(() => {
-    if (!loaded) return;
+    if (!caps.canRunScrollytelling || !loaded) return;
     const video = videoRef.current;
     if (!video || !video.duration) return;
 
     const duration = video.duration;
 
     function tick() {
-      // 1. Raw scroll progress
       const raw = scrollYProgress.get();
-
-      // 2. Exponential lerp → smooth, spring-like motion
       displayRef.current += (raw - displayRef.current) * LERP_FACTOR;
       const p = displayRef.current;
 
-      // 3. Seek video (hardware decoder handles this in <1ms for all-I-frame)
       const targetTime = Math.max(0, Math.min(p * duration, duration - 0.001));
       video.currentTime = targetTime;
-
-      // 4. Draw video frame on canvas (SAME TICK)
       drawVideoFrame();
 
-      // 5. Update text overlays (SAME TICK — perfect sync with canvas)
       if (isReadyRef.current) {
-        const textP = raw; // raw progress for text (no lerp lag)
-
+        const textP = raw;
         for (const s of TEXT_SECTIONS) {
           const el = sectionElsRef.current[s.id];
           if (!el) continue;
@@ -267,11 +400,11 @@ export default function HeroScroll({ onEnter }) {
 
     rafIdRef.current = requestAnimationFrame(tick);
     return () => { if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current); };
-  }, [loaded, scrollYProgress, drawVideoFrame]);
+  }, [caps.canRunScrollytelling, loaded, scrollYProgress, drawVideoFrame]);
 
-  /* ── requestVideoFrameCallback (bonus accuracy layer) ───────────────── */
+  /* ── requestVideoFrameCallback (desktop, bonus accuracy) ────────── */
   useEffect(() => {
-    if (!loaded) return;
+    if (!caps.canRunScrollytelling || !loaded) return;
     const video = videoRef.current;
     if (!video || !("requestVideoFrameCallback" in video)) return;
 
@@ -283,37 +416,40 @@ export default function HeroScroll({ onEnter }) {
     cbId = video.requestVideoFrameCallback(onNewFrame);
 
     return () => { if (cbId) video.cancelVideoFrameCallback(cbId); };
-  }, [loaded, drawVideoFrame]);
+  }, [caps.canRunScrollytelling, loaded, drawVideoFrame]);
 
-  /* ── Resize handler ─────────────────────────────────────────────────── */
+  /* ── Resize handler (desktop only) ──────────────────────────────── */
   useEffect(() => {
-    if (!loaded) return;
+    if (!caps.canRunScrollytelling || !loaded) return;
     function onResize() {
       sizeCanvas();
       drawVideoFrame();
     }
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
-  }, [loaded, sizeCanvas, drawVideoFrame]);
+  }, [caps.canRunScrollytelling, loaded, sizeCanvas, drawVideoFrame]);
 
-  /* ══════════════════════════════════════════════════════════════════════
-   * RENDER — static JSX, never re-renders during scroll
-   * ══════════════════════════════════════════════════════════════════════ */
+  /* ══════════════════════════════════════════════════════════════════
+   * RENDER
+   * ══════════════════════════════════════════════════════════════════ */
 
+  // ── FALLBACK PATH (mobile / low-end) ───────────────────────────
+  if (!caps.canRunScrollytelling) {
+    return <StaticHeroFallback onEnter={onEnter} isMobile={caps.isMobile} />;
+  }
+
+  // ── DESKTOP PATH (video scrubbing) ─────────────────────────────
   return (
     <>
-      {/* Loading overlay (one-shot, exits on canplaythrough) */}
       <AnimatePresence>
         {!loaded && <LoadingOverlay progress={loadProgress} />}
       </AnimatePresence>
 
-      {/* Scroll container */}
       <div
         ref={scrollContainerRef}
         className="relative w-full"
         style={{ height: SCROLL_HEIGHT, background: "#050505" }}
       >
-        {/* ── Hidden video source (hardware-decoded, preloaded) ─────── */}
         <video
           ref={videoRef}
           muted
@@ -332,16 +468,13 @@ export default function HeroScroll({ onEnter }) {
           <source src={VIDEO_SRC} type="video/mp4" />
         </video>
 
-        {/* ── Visible canvas (sticky, covers viewport) ─────────────── */}
         <canvas
           ref={canvasRef}
           className="sticky top-0 w-full"
           style={{ height: "100vh", display: "block", background: "#050505" }}
         />
 
-        {/* ── Text overlay layer (fixed, pointer-events-none) ──────── */}
         <div className="fixed inset-0 pointer-events-none z-10">
-          {/* Vignette */}
           <div
             ref={vignetteElRef}
             className="absolute inset-0"
@@ -353,7 +486,6 @@ export default function HeroScroll({ onEnter }) {
             }}
           />
 
-          {/* Text sections */}
           {TEXT_SECTIONS.map((section) => (
             <div
               key={section.id}
@@ -369,7 +501,6 @@ export default function HeroScroll({ onEnter }) {
             </div>
           ))}
 
-          {/* Scroll indicator */}
           <div
             ref={scrollIndicatorElRef}
             className="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2"

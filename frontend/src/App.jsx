@@ -7,6 +7,7 @@ import ContactTimeline from "./components/ContactTimeline";
 import InfoBanner from "./components/InfoBanner";
 import LandingPage from "./components/LandingPage";
 import useSatguardStore from "./store/satguardStore";
+import useDeviceCapability from "./hooks/useDeviceCapability";
 
 /**
  * App.jsx — Root shell with landing → dashboard transition
@@ -16,6 +17,8 @@ import useSatguardStore from "./store/satguardStore";
  */
 export default function App() {
   const [view, setView] = useState("landing"); // "landing" | "entering" | "dashboard"
+  const [dismissedDeviceWarning, setDismissedDeviceWarning] = useState(false);
+  const caps = useDeviceCapability();
 
   const cesiumReady = useSatguardStore((s) => s.cesiumReady);
   const tleData = useSatguardStore((s) => s.tleData);
@@ -91,6 +94,83 @@ export default function App() {
   /* ═══════════════════════════════════════════════════════════════ */
   return (
     <div id="satguard-root" className="dashboard-root relative w-full h-full overflow-hidden">
+      {/* ── Device capability warning overlay ─────────────────────── */}
+      {(!caps.canRunDashboard && !dismissedDeviceWarning) && (
+        <div
+          className="fixed inset-0 z-[200] flex items-center justify-center p-6"
+          style={{
+            background: "rgba(5, 5, 16, 0.95)",
+            backdropFilter: "blur(12px)",
+            WebkitBackdropFilter: "blur(12px)",
+          }}
+        >
+          <div className="max-w-md text-center">
+            {/* Icon */}
+            <div className="w-16 h-16 mx-auto mb-6 rounded-full flex items-center justify-center" style={{ background: "rgba(255, 165, 2, 0.1)", border: "1px solid rgba(255, 165, 2, 0.3)" }}>
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#ffa502" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="3" width="20" height="14" rx="2" />
+                <line x1="8" y1="21" x2="16" y2="21" />
+                <line x1="12" y1="17" x2="12" y2="21" />
+              </svg>
+            </div>
+
+            <h2 className="text-xl font-bold text-white mb-3">Desktop Recommended</h2>
+
+            <p className="text-sm text-white/60 leading-relaxed mb-2">
+              SatGuard's orbital dashboard uses a <span style={{ color: "#00d4ff" }}>3D CesiumJS globe</span>,{" "}
+              <span style={{ color: "#00d4ff" }}>real-time SGP4 propagation</span>, and{" "}
+              <span style={{ color: "#00d4ff" }}>WebGL rendering</span> that require a desktop browser.
+            </p>
+
+            {!caps.hasWebGL && (
+              <p className="text-xs text-red-400/80 mb-4 px-4 py-2 rounded-md" style={{ background: "rgba(255,71,87,0.08)", border: "1px solid rgba(255,71,87,0.2)" }}>
+                Your browser does not support WebGL, which is required for the 3D globe.
+              </p>
+            )}
+
+            {caps.isMobile && (
+              <p className="text-xs text-white/40 mb-4">
+                For the best experience, please open SatGuard on a laptop or desktop computer with Chrome, Edge, or Firefox.
+              </p>
+            )}
+
+            <div className="flex flex-col gap-3 mt-6">
+              <button
+                onClick={() => {
+                  setView("landing");
+                  window.scrollTo(0, 0);
+                }}
+                className="w-full py-3 text-sm font-medium tracking-wider uppercase rounded-md cursor-pointer transition-all duration-300"
+                style={{
+                  background: "rgba(0, 212, 255, 0.12)",
+                  border: "1px solid rgba(0, 212, 255, 0.3)",
+                  color: "#00d4ff",
+                }}
+              >
+                ← Back to Landing Page
+              </button>
+
+              {caps.hasWebGL && (
+                <button
+                  onClick={() => setDismissedDeviceWarning(true)}
+                  className="w-full py-2.5 text-xs font-mono tracking-wider uppercase rounded-md cursor-pointer transition-all duration-300"
+                  style={{
+                    background: "transparent",
+                    border: "1px solid rgba(255, 255, 255, 0.15)",
+                    color: "rgba(255, 255, 255, 0.4)",
+                  }}
+                >
+                  Continue Anyway →
+                </button>
+              )}
+            </div>
+
+            <p className="text-[10px] text-white/20 mt-6 font-mono">
+              {caps.cores} cores · {caps.memory}GB RAM · WebGL: {caps.hasWebGL ? "✓" : "✗"}
+            </p>
+          </div>
+        </div>
+      )}
       {/* z-0  — Globe canvas (base layer) */}
       <Globe />
 
